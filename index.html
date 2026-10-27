@@ -104,7 +104,15 @@
     .steer-row { display: flex; gap: 10px; }
     .steer { flex: 1; background: var(--line); font-size: 1.1rem; padding: 12px; touch-action: none; }
     .steer.active { background: var(--sign); color: var(--bg); }
-    .replay { width: 100%; background: var(--line); }
+    .replay {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--line);
+        font-size: clamp(0.95rem, 4vw, 1.15rem);
+        padding: 13px 10px;
+        white-space: nowrap;
+    }
     .replay[aria-pressed="true"] { background: var(--sign); color: var(--bg); }
     /* flashing red when a round ends, until the player opens the closest call */
     .replay.attention { color: #ffffff; animation: replay-flash 0.8s ease-in-out infinite; }
@@ -136,7 +144,7 @@
         max-width: 1600px;
         display: grid;
         grid-template-columns: 300px minmax(0, 1fr);
-        grid-template-rows: repeat(5, auto) 1fr;
+        grid-template-rows: repeat(4, auto) 1fr;
         column-gap: 24px;
         row-gap: 14px;
     }
@@ -170,6 +178,8 @@
 
     <div class="stage" id="stage">
         <canvas id="game" width="480" height="640" aria-label="Driving game: keep the car between the fires"></canvas>
+        <!-- sits directly under the game, sized to the game's width by fitCanvas() -->
+        <button id="replayBtn" class="replay" disabled>Show closest call</button>
     </div>
 
     <!-- Steering buttons (also: arrow keys / A D, or touch either side of the road) -->
@@ -177,7 +187,6 @@
         <button class="steer" id="leftBtn">◀ Left</button>
         <button class="steer" id="rightBtn">Right ▶</button>
     </div>
-    <button id="replayBtn" class="replay" disabled>Show closest call</button>
     <p class="hint">Steer with ← → or A / D, hold the buttons, or touch either side of the road.</p>
 </div>
 
@@ -186,7 +195,7 @@
 //  SETTINGS: tweak these to change how the game feels
 // =====================================================================
 const CONFIG = {
-    roadWidth: 240,          // px, width of the road
+    roadWidthFeet: 40,       // road width in feet. Gap to each edge when centered = (40 - 6) / 2 = 17 ft
     carWidth: 40,            // px
     carHeight: 70,           // px
     roadSpeed: 420,          // px/s, how fast the road scrolls (feeling of speed)
@@ -204,6 +213,7 @@ const CONFIG = {
 
     carWidthFeet: 6          // real-world car width, used to turn pixels into feet
 };
+CONFIG.roadWidth = CONFIG.roadWidthFeet * CONFIG.carWidth / CONFIG.carWidthFeet;   // in px
 
 // Ratings for the closest call, as a fraction of the gap you have when perfectly centered
 const RATINGS = [
@@ -308,10 +318,14 @@ function settingsText(g) { return `${g.freq.name} bumps · ${g.strength.name} hi
 function nextBumpDelay(freq) { return rand(CONFIG.bumpMinGap, CONFIG.bumpMaxGap) * freq.gap; }
 
 // Scale the canvas to the space available, sharp on high-resolution screens
+const REPLAY_GAP = 10;   // px between the game and the Show closest call button
 function fitCanvas() {
     const r = stage.getBoundingClientRect();
-    const scale = Math.max(0.1, Math.min(r.width / W, r.height / H));
+    const btnH = replayBtn.offsetHeight + REPLAY_GAP;
+    const scale = Math.max(0.1, Math.min(r.width / W, (r.height - btnH) / H));
     const cw = Math.floor(W * scale), ch = Math.floor(H * scale);
+    replayBtn.style.width = cw + 'px';
+    replayBtn.style.top = (ch + REPLAY_GAP) + 'px';
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     canvas.style.width = cw + 'px';
     canvas.style.height = ch + 'px';
@@ -928,7 +942,7 @@ function drawGapPanel() {
     ctx.fillText(`${fmtGap(g.minGap)}${sideText} · ${worst.label}`, W / 2, y0 + 112);
 }
 
-// Banner shown in the "Show closest call" view, with a ring on the closer side of the car
+// Banner shown in the "Show closest call" view
 function drawClosestBanner(g) {
     const r = ratingFor(g.minGap);
     ctx.fillStyle = 'rgba(245, 196, 0, 0.94)';
@@ -939,15 +953,6 @@ function drawClosestBanner(g) {
     ctx.fillText(`CLOSEST CALL · ${g.elapsed.toFixed(1)} s into the run`, W / 2, HUD_H + 22);
     ctx.font = `700 15px ${FONT}`;
     ctx.fillText(`${fmtGap(g.minGap)} from the ${g.minGapSide} edge · ${r.label}`, W / 2, HUD_H + 42);
-
-    // ring around the side of the car that came closest
-    const carX = ROAD_CX + g.offset;
-    const sx = g.minGapSide === 'left' ? carX - CONFIG.carWidth / 2 : carX + CONFIG.carWidth / 2;
-    ctx.strokeStyle = '#f5c400';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(sx, CAR_Y, 22, 0, Math.PI * 2);
-    ctx.stroke();
 }
 
 // lines: strings, or {text, color} for a colored line
