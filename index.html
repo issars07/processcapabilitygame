@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stay Centered</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700;800&family=Bungee&display=swap">
+<style>
+    /* Layout: one-screen arcade cabinet: title bar, the road filling the rest, controls tucked under it */
+    :root {
+        --bg: #15110e;          /* warm asphalt black */
+        --panel: #221c17;
+        --line: #3a3029;
+        --fg: #f3ece4;
+        --muted: #a8998b;
+        --sign: #f5c400;        /* center-line yellow */
+        --go: #2f9e5b;
+        --go-hover: #278a4f;
+        --alert: #e53e3e;
+        --alert-dim: #8f2222;
+        --font-display: Bungee, Impact, "Arial Black", sans-serif;
+        --font-body: Barlow, "Arial Narrow", system-ui, sans-serif;
+        color-scheme: dark;
+    }
+    html, body { height: 100%; }
+    body {
+        margin: 0;
+        box-sizing: border-box;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-body);
+        font-size: 16px;
+        padding-block: 12px;
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        overflow-x: hidden;
+        overscroll-behavior: none;
+        /* no text selection, copy menus or double-tap zoom while playing */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: manipulation;
+    }
+    .shell {
+        width: 100%;
+        max-width: 520px;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h1 {
+        margin: 0;
+        font-family: var(--font-display);
+        font-weight: 400;
+        font-size: clamp(1.15rem, 5vw, 1.6rem);
+        letter-spacing: 0.02em;
+        color: var(--sign);
+        text-wrap: balance;
+    }
+    .settings {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 6px 14px;
+        font-weight: 600;
+    }
+    .settings label { white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 11rem; }
+    input[type="range"] { flex: 1; min-width: 0; accent-color: var(--sign); }
+    .stage { flex: 1; min-height: 160px; position: relative; }
+    canvas {
+        position: absolute;
+        left: 50%;
+        top: 0;
+        transform: translateX(-50%);
+        display: block;
+        border-radius: 12px;
+        background: var(--panel);
+        touch-action: none;
+    }
+    button {
+        font: inherit;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 18px;
+        color: var(--fg);
+        cursor: pointer;
+        touch-action: manipulation;
+    }
+    button:focus-visible, input:focus-visible { outline: 3px solid var(--sign); outline-offset: 2px; }
+    #startBtn { background: var(--go); min-width: 7.5rem; }
+    #startBtn:hover { background: var(--go-hover); }
+    .steer-row { display: flex; gap: 10px; }
+    .steer { flex: 1; background: var(--line); font-size: 1.1rem; padding: 12px; touch-action: none; }
+    .steer.active { background: var(--sign); color: var(--bg); }
+    .replay { width: 100%; background: var(--line); }
+    .replay[aria-pressed="true"] { background: var(--sign); color: var(--bg); }
+    /* flashing red when a round ends, until the player opens the closest call */
+    .replay.attention { color: #ffffff; animation: replay-flash 0.8s ease-in-out infinite; }
+    @keyframes replay-flash {
+        0%, 100% { background: var(--alert); box-shadow: 0 0 0 0 rgba(229, 62, 62, 0.75); }
+        50%      { background: var(--alert-dim); box-shadow: 0 0 0 8px rgba(229, 62, 62, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .replay.attention { animation: none; background: var(--alert); }
+    }
+    .hint { margin: 0; font-size: 0.9rem; font-weight: 500; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <div class="topbar">
+        <h1>Stay Centered</h1>
+        <button id="startBtn">Start</button>
+    </div>
+    <div class="settings">
+        <label for="timeSlider">Game time <span id="timeLabel">30</span> s</label>
+        <input type="range" id="timeSlider" min="15" max="60" step="5" value="30">
+        <label for="freqSlider">Bump frequency <span id="freqLabel">Normal</span></label>
+        <input type="range" id="freqSlider" min="1" max="5" step="1" value="3">
+        <label for="bumpSlider">Bump strength <span id="bumpLabel">Normal</span></label>
+        <input type="range" id="bumpSlider" min="1" max="5" step="1" value="3">
+    </div>
+
+    <div class="stage" id="stage">
+        <canvas id="game" width="480" height="640" aria-label="Driving game: keep the car between the fires"></canvas>
+    </div>
+
+    <!-- Steering buttons (also: arrow keys / A D, or touch either side of the road) -->
+    <div class="steer-row">
+        <button class="steer" id="leftBtn">◀ Left</button>
+        <button class="steer" id="rightBtn">Right ▶</button>
+    </div>
+    <button id="replayBtn" class="replay" disabled>Show closest call</button>
+    <p class="hint">Steer with ← → or A / D, hold the buttons, or touch either side of the road.</p>
+</div>
+
+<script>
+// =====================================================================
+//  SETTINGS: tweak these to change how the game feels
+// =====================================================================
+const CONFIG = {
+    roadWidth: 240,          // px, width of the road
+    carWidth: 40,            // px
+    carHeight: 70,           // px
+    roadSpeed: 420,          // px/s, how fast the road scrolls (feeling of speed)
+
+    steerAccel: 700,         // px/s², how hard the steering pushes sideways
+    maxSideSpeed: 260,       // px/s, cap on sideways speed
+    sideFriction: 1.6,       // how quickly sideways drift dies out (higher = calmer)
+
+    bumpMinGap: 1.0,         // s, shortest time between bumps
+    bumpMaxGap: 2.5,         // s, longest time between bumps
+    bumpMinPush: 90,         // px/s, weakest sideways push from a bump
+    bumpMaxPush: 170,        // px/s, strongest sideways push from a bump
+
+    crashWhenOffRoad: true,  // true = game ends as soon as the side of the car crosses a road edge
+
+    carWidthFeet: 6          // real-world car width, used to turn pixels into feet
+};
+
+// Ratings for the closest call, as a fraction of the gap you have when perfectly centered
+const RATINGS = [
+    { min: 0.75, label: 'Excellent', color: '#48bb78' },
+    { min: 0.50, label: 'Good',      color: '#9ae6b4' },
+    { min: 0.25, label: 'Shaky',     color: '#ecc94b' },
+    { min: 0.001, label: 'Dangerous', color: '#f6ad55' },
+    { min: -Infinity, label: 'Over the edge', color: '#f56565' }
+];
+
+// "Bump frequency" slider: "gap" stretches or shrinks the time between bumps
+// (bigger = fewer bumps). Normal = bumpMinGap/bumpMaxGap above.
+const FREQ_LEVELS = [
+    { name: 'Rare',     gap: 1.8 },
+    { name: 'Few',      gap: 1.35 },
+    { name: 'Normal',   gap: 1.0 },
+    { name: 'Frequent', gap: 0.75 },
+    { name: 'Constant', gap: 0.55 }
+];
+
+// "Bump strength" slider: "push" scales how hard each bump knocks the car.
+// Normal = bumpMinPush/bumpMaxPush above.
+const STRENGTH_LEVELS = [
+    { name: 'Gentle', push: 0.6 },
+    { name: 'Light',  push: 0.8 },
+    { name: 'Normal', push: 1.0 },
+    { name: 'Hard',   push: 1.25 },
+    { name: 'Brutal', push: 1.5 }
+];
+
+// =====================================================================
+//  SETUP
+// =====================================================================
+const FONT = 'Barlow, "Arial Narrow", system-ui, sans-serif';
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const touchUI = window.matchMedia('(pointer: coarse)').matches;
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const stage = document.getElementById('stage');
+const W = 480, H = 760;   // game coordinates; the canvas is scaled to fit the screen
+const ROAD_H = 640;       // the road view; below it (640–760) is the gap panel
+
+const startBtn = document.getElementById('startBtn');
+const timeSlider = document.getElementById('timeSlider');
+const timeLabel = document.getElementById('timeLabel');
+const bumpSlider = document.getElementById('bumpSlider');
+const bumpLabel = document.getElementById('bumpLabel');
+const freqSlider = document.getElementById('freqSlider');
+const freqLabel = document.getElementById('freqLabel');
+const replayBtn = document.getElementById('replayBtn');
+let showingClosest = false;   // true while the "Show closest call" view is on
+const leftBtn = document.getElementById('leftBtn');
+const rightBtn = document.getElementById('rightBtn');
+
+const ROAD_CX = W / 2;
+const ROAD_L = ROAD_CX - CONFIG.roadWidth / 2;
+const ROAD_R = ROAD_CX + CONFIG.roadWidth / 2;
+const CAR_Y = ROAD_H - 130;                                       // car's center (vertical)
+const MAX_MARGIN = (CONFIG.roadWidth - CONFIG.carWidth) / 2; // gap to each edge when centered
+const PX_PER_FOOT = CONFIG.carWidth / CONFIG.carWidthFeet;
+const HUD_H = 42;                                            // height of the time/score bar at the top
+
+let game;
+let phase = 'ready';      // 'ready' | 'playing' | 'paused' | 'over'
+
+function newGame() {
+    const freq = FREQ_LEVELS[Number(freqSlider.value) - 1];
+    const strength = STRENGTH_LEVELS[Number(bumpSlider.value) - 1];
+    return {
+        freq,
+        strength,
+        duration: Number(timeSlider.value),
+        elapsed: 0,
+        offset: 0,          // car's sideways position from the center line (px, + = right)
+        sideSpeed: 0,       // px/s
+        distance: 0,        // how far the road has scrolled (px), drives all scrolling art
+        bumps: [],          // bumps on the road ahead {y, dir, push, hit}
+        nextBumpIn: nextBumpDelay(freq),
+        scoreSum: 0,        // sum of (closeness × time), used for the average
+        minGap: MAX_MARGIN, // closest the car came to an edge while still on the road (px)
+        minGapSide: null,
+        minLeft: MAX_MARGIN,  // closest the car came to the LEFT edge while alive (px)
+        minRight: MAX_MARGIN, // closest the car came to the RIGHT edge while alive (px)
+        shake: 0,
+        crashed: false,
+        closestSnap: null   // snapshot of the road at the moment of the closest call
+    };
+}
+game = newGame();
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+function settingsText(g) { return `${g.freq.name} bumps · ${g.strength.name} hits · ${g.duration} s`; }
+function nextBumpDelay(freq) { return rand(CONFIG.bumpMinGap, CONFIG.bumpMaxGap) * freq.gap; }
+
+// Scale the canvas to the space available, sharp on high-resolution screens
+function fitCanvas() {
+    const r = stage.getBoundingClientRect();
+    const scale = Math.max(0.1, Math.min(r.width / W, r.height / H));
+    const cw = Math.floor(W * scale), ch = Math.floor(H * scale);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.style.width = cw + 'px';
+    canvas.style.height = ch + 'px';
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+    ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+}
+window.addEventListener('resize', fitCanvas);
+if (window.ResizeObserver) new ResizeObserver(fitCanvas).observe(stage);
+fitCanvas();
+
+// =====================================================================
+//  INPUT: keyboard, hold buttons, and touching the road
+// =====================================================================
+const keys = { left: false, right: false };
+const btns = { left: false, right: false };
+const touches = new Map();   // pointerId -> 'left' | 'right'
+
+function steerDir() {
+    let left = keys.left || btns.left, right = keys.right || btns.right;
+    for (const side of touches.values()) {
+        if (side === 'left') left = true; else right = true;
+    }
+    return (right ? 1 : 0) - (left ? 1 : 0);
+}
+function clearInputs() {
+    keys.left = keys.right = btns.left = btns.right = false;
+    touches.clear();
+    leftBtn.classList.remove('active');
+    rightBtn.classList.remove('active');
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { keys.left = true; e.preventDefault(); }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { keys.right = true; e.preventDefault(); }
+});
+window.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+});
+
+function holdButton(btn, dir) {
+    const on = (e) => { e.preventDefault(); btns[dir] = true; btn.classList.add('active'); };
+    const off = () => { btns[dir] = false; btn.classList.remove('active'); };
+    btn.addEventListener('pointerdown', on);
+    btn.addEventListener('pointerup', off);
+    btn.addEventListener('pointerleave', off);
+    btn.addEventListener('pointercancel', off);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+holdButton(leftBtn, 'left');
+holdButton(rightBtn, 'right');
+
+// Touching the road: left half steers left, right half steers right.
+// Sliding your finger across the middle switches direction.
+function sideAt(e) {
+    const r = canvas.getBoundingClientRect();
+    return (e.clientX - r.left) / r.width < 0.5 ? 'left' : 'right';
+}
+canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (phase === 'ready') { startGame(); return; }    // tap the road to start
+    if (phase === 'paused') { resume(); return; }      // tap to resume
+    if (phase !== 'playing') return;
+    touches.set(e.pointerId, sideAt(e));
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+canvas.addEventListener('pointermove', (e) => {
+    if (touches.has(e.pointerId)) touches.set(e.pointerId, sideAt(e));
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(type =>
+    canvas.addEventListener(type, (e) => touches.delete(e.pointerId)));
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// =====================================================================
+//  GAME FLOW: start, pause, resume, end
+// =====================================================================
+function syncControls() {
+    startBtn.textContent = { ready: 'Start', playing: 'Pause', paused: 'Resume', over: 'Play Again' }[phase];
+    timeSlider.disabled = bumpSlider.disabled = freqSlider.disabled = phase === 'playing' || phase === 'paused';
+    if (phase !== 'over') showingClosest = false;
+    // only after a finished round with no crash (a crash has no closest call)
+    replayBtn.disabled = !(phase === 'over' && !game.crashed && game.closestSnap);
+    replayBtn.textContent = showingClosest ? 'Back to results' : 'Show closest call';
+    replayBtn.setAttribute('aria-pressed', String(showingClosest));
+    replayBtn.classList.toggle('attention', !replayBtn.disabled && !showingClosest && !game.replaySeen);
+}
+replayBtn.addEventListener('click', () => {
+    if (replayBtn.disabled) return;
+    showingClosest = !showingClosest;
+    game.replaySeen = true;   // stop flashing once the player has looked
+    syncControls();
+});
+function startGame() { game = newGame(); clearInputs(); phase = 'playing'; syncControls(); }
+function pause() { if (phase === 'playing') { phase = 'paused'; clearInputs(); syncControls(); } }
+function resume() { if (phase === 'paused') { phase = 'playing'; syncControls(); } }
+function endGame() { phase = 'over'; showingClosest = false; clearInputs(); syncControls(); }
+
+startBtn.addEventListener('click', () => {
+    if (phase === 'playing') pause();
+    else if (phase === 'paused') resume();
+    else startGame();
+});
+
+function settingsChanged() {
+    timeLabel.textContent = timeSlider.value;
+    bumpLabel.textContent = STRENGTH_LEVELS[Number(bumpSlider.value) - 1].name;
+    freqLabel.textContent = FREQ_LEVELS[Number(freqSlider.value) - 1].name;
+    if (phase === 'ready' || phase === 'over') { game = newGame(); phase = 'ready'; syncControls(); }
+}
+timeSlider.addEventListener('input', settingsChanged);
+bumpSlider.addEventListener('input', settingsChanged);
+freqSlider.addEventListener('input', settingsChanged);
+
+// Pause if the player switches apps, gets a call, or clicks away
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+window.addEventListener('blur', pause);
+
+// =====================================================================
+//  SIMULATION
+// =====================================================================
+function update(dt) {
+    const g = game;
+    g.elapsed += dt;
+    g.distance += CONFIG.roadSpeed * dt;
+    g.shake = Math.max(0, g.shake - dt);
+
+    // Steering
+    g.sideSpeed += steerDir() * CONFIG.steerAccel * dt;
+    g.sideSpeed -= g.sideSpeed * CONFIG.sideFriction * dt;
+    g.sideSpeed = Math.max(-CONFIG.maxSideSpeed, Math.min(CONFIG.maxSideSpeed, g.sideSpeed));
+    g.offset += g.sideSpeed * dt;
+
+    // Spawn bumps at the top of the screen
+    g.nextBumpIn -= dt;
+    if (g.nextBumpIn <= 0) {
+        g.bumps.push({
+            y: -20,
+            dir: Math.random() < 0.5 ? -1 : 1,
+            push: rand(CONFIG.bumpMinPush, CONFIG.bumpMaxPush) * g.strength.push,
+            hit: false
+        });
+        g.nextBumpIn = nextBumpDelay(g.freq);
+    }
+
+    // Move bumps down; when one reaches the car, knock it sideways
+    for (const b of g.bumps) {
+        b.y += CONFIG.roadSpeed * dt;
+        if (!b.hit && b.y >= CAR_Y - CONFIG.carHeight / 2) {
+            b.hit = true;
+            g.sideSpeed += b.dir * b.push;
+            g.shake = reduceMotion ? 0 : 0.25;
+            if (navigator.vibrate) { try { navigator.vibrate(40); } catch (_) {} }
+        }
+    }
+    g.bumps = g.bumps.filter(b => b.y < ROAD_H + 30);
+
+    g.scoreSum += closeness() * dt;
+
+    // Into the fire: the side of the car crossed the road edge
+    const gap = edgeGap();
+    if (CONFIG.crashWhenOffRoad && gap < 0) {
+        g.crashed = true;
+        endGame();
+        return;
+    }
+
+    // Closest call, only counted while the car is still alive
+    const newClosest = gap < g.minGap;
+    if (newClosest) { g.minGap = gap; g.minGapSide = nearestSide(); }
+    const sg = sideGaps();
+    g.minLeft = Math.min(g.minLeft, sg.left);
+    g.minRight = Math.min(g.minRight, sg.right);
+    if (newClosest) {
+        g.closestSnap = {
+            offset: g.offset, sideSpeed: g.sideSpeed, elapsed: g.elapsed, distance: g.distance,
+            bumps: g.bumps.map(b => ({ ...b })), minLeft: g.minLeft, minRight: g.minRight
+        };
+    }
+    if (g.elapsed >= g.duration) {
+        g.elapsed = g.duration;
+        endGame();
+    }
+}
+
+// Gap between the side of the car and the nearest road edge (px). Negative = hanging over the edge.
+function edgeGap() { return MAX_MARGIN - Math.abs(game.offset); }
+function nearestSide() { return game.offset >= 0 ? 'right' : 'left'; }
+// Gap from each side of the car to the road edge on that side (px)
+function sideGaps() {
+    return { left: MAX_MARGIN + game.offset, right: MAX_MARGIN - game.offset };
+}
+// Which side is closer, or 'equal' when both show the same distance (to 0.1 ft)
+function closerSide(gaps) {
+    if (fmtGap(gaps.left) === fmtGap(gaps.right)) return 'equal';
+    return gaps.left < gaps.right ? 'left' : 'right';
+}
+function toFeet(px) { return px / PX_PER_FOOT; }
+function fmtGap(px) {
+    return px >= 0 ? `${toFeet(px).toFixed(1)} ft` : `${toFeet(-px).toFixed(1)} ft over`;
+}
+function ratingFor(gapPx) {
+    const f = gapPx / MAX_MARGIN;
+    return RATINGS.find(r => f >= r.min);
+}
+
+// 1.0 = dead center, 0.0 = car touching (or past) the nearest edge
+function closeness() { return Math.max(0, edgeGap() / MAX_MARGIN); }
+
+// Average closeness over the FULL game time (time lost to a crash counts as 0)
+function scorePercent() {
+    const t = phase === 'over' ? game.duration : Math.max(game.elapsed, 0.001);
+    return Math.round((game.scoreSum / t) * 100);
+}
+function grade(p) {
+    if (p >= 90) return 'A';
+    if (p >= 80) return 'B';
+    if (p >= 70) return 'C';
+    if (p >= 60) return 'D';
+    return 'F';
+}
+
+// =====================================================================
+//  FIRE ZONE ART (generated once, then scrolled)
+// =====================================================================
+const TILE = 720;   // the fire pattern repeats every 720 px of road
+const SIDES = [
+    { x0: 0, x1: ROAD_L, edge: ROAD_L, out: -1 },   // left fire zone
+    { x0: ROAD_R, x1: W, edge: ROAD_R, out: 1 }      // right fire zone
+];
+for (const s of SIDES) {
+    s.flames = [];
+    // two rows of flames hugging the road edge
+    for (let i = 0; i < TILE / 18; i++) {
+        s.flames.push({ x: s.edge + s.out * 12, y: i * 18, size: rand(16, 24), ph: rand(0, 6.28) });
+        s.flames.push({ x: s.edge + s.out * 30, y: i * 18 + 9, size: rand(20, 30), ph: rand(0, 6.28) });
+    }
+    // scattered flames further out
+    for (let i = 0; i < 26; i++) {
+        const x = s.out < 0 ? rand(10, ROAD_L - 46) : rand(ROAD_R + 46, W - 10);
+        s.flames.push({ x, y: rand(0, TILE), size: rand(12, 22), ph: rand(0, 6.28) });
+    }
+    s.flames.sort((a, b) => a.y - b.y);
+    // glowing lava cracks
+    s.cracks = [];
+    for (let i = 0; i < 9; i++) {
+        let x = rand(s.x0 + 8, s.x1 - 8), y = rand(0, TILE);
+        const pts = [[x, y]];
+        for (let k = 0; k < 5; k++) {
+            x = Math.max(s.x0 + 4, Math.min(s.x1 - 4, x + rand(-22, 22)));
+            y += rand(14, 30);
+            pts.push([x, y]);
+        }
+        s.cracks.push(pts);
+    }
+}
+
+function drawFireZone(s, scroll, t) {
+    // scorched ground, hotter toward the road
+    const grad = ctx.createLinearGradient(s.out < 0 ? 0 : W, 0, s.edge, 0);
+    grad.addColorStop(0, '#1c0703');
+    grad.addColorStop(0.7, '#3d0f04');
+    grad.addColorStop(1, '#6e1a05');
+    ctx.fillStyle = grad;
+    ctx.fillRect(s.x0, -10, s.x1 - s.x0, ROAD_H + 20);
+
+    // lava cracks (drawn twice so they wrap seamlessly)
+    for (const pts of s.cracks) {
+        for (const shift of [0, -TILE]) {
+            const dy = ((scroll % TILE) + TILE) % TILE + shift;
+            ctx.beginPath();
+            pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y + dy) : ctx.moveTo(x, y + dy));
+            ctx.strokeStyle = 'rgba(255, 90, 20, 0.35)';
+            ctx.lineWidth = 5;
+            ctx.stroke();
+            ctx.strokeStyle = '#ffb347';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+    }
+
+    // flames
+    const flick = reduceMotion ? 0 : 1;
+    for (const f of s.flames) {
+        const y = ((f.y + scroll) % TILE + TILE) % TILE - 40;
+        if (y < -40 || y > ROAD_H + 40) continue;
+        const k = 1 + flick * (0.22 * Math.sin(t * 11 + f.ph) + 0.1 * Math.sin(t * 23 + f.ph * 2));
+        const h = f.size * k, w = f.size * 0.42;
+        drawFlame(f.x, y, w, h, 'rgba(220, 38, 38, 0.9)');
+        drawFlame(f.x, y, w * 0.7, h * 0.72, '#ff7a1a');
+        drawFlame(f.x, y, w * 0.38, h * 0.42, '#ffd23f');
+    }
+}
+
+function drawFlame(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y - h);
+    ctx.bezierCurveTo(x + w * 0.5, y - h * 0.55, x + w, y - h * 0.35, x + w * 0.85, y - w * 0.4);
+    ctx.arc(x, y - w * 0.4, w * 0.85, 0, Math.PI);
+    ctx.bezierCurveTo(x - w, y - h * 0.35, x - w * 0.5, y - h * 0.55, x, y - h);
+    ctx.fill();
+}
+
+// =====================================================================
+//  DRAWING
+// =====================================================================
+function draw(t) {
+    const g = game;
+    const scroll = g.distance;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, ROAD_H);
+    ctx.clip();
+    if (g.shake > 0) ctx.translate(rand(-3, 3), rand(-2, 2));
+
+    // Road surface
+    ctx.fillStyle = '#4a4744';
+    ctx.fillRect(ROAD_L, -10, CONFIG.roadWidth, ROAD_H + 20);
+
+    // Red-and-white rumble strips along both edges
+    const rs = scroll % 40;
+    for (let y = -40 + rs; y < ROAD_H; y += 40) {
+        ctx.fillStyle = '#e53e3e';
+        ctx.fillRect(ROAD_L, y, 6, 20);
+        ctx.fillRect(ROAD_R - 6, y, 6, 20);
+        ctx.fillStyle = '#f7f3ee';
+        ctx.fillRect(ROAD_L, y + 20, 6, 20);
+        ctx.fillRect(ROAD_R - 6, y + 20, 6, 20);
+    }
+
+    // Fire zones on both sides
+    for (const s of SIDES) drawFireZone(s, scroll, t);
+
+    // Heat glow creeping onto the road when the car gets close to an edge
+    const gaps = sideGaps();
+    for (const s of SIDES) {
+        const f = (s.out < 0 ? gaps.left : gaps.right) / MAX_MARGIN;
+        if (f < 0.4) {
+            const a = Math.min(0.45, (0.4 - f) / 0.4 * 0.45);
+            const glow = ctx.createLinearGradient(s.edge, 0, s.edge - s.out * 120, 0);
+            glow.addColorStop(0, `rgba(255, 80, 20, ${a})`);
+            glow.addColorStop(1, 'rgba(255, 80, 20, 0)');
+            ctx.fillStyle = glow;
+            ctx.fillRect(s.out < 0 ? ROAD_L : ROAD_R - 120, -10, 120, ROAD_H + 20);
+        }
+    }
+
+    // Dashed center line
+    ctx.fillStyle = '#f5c400';
+    for (let y = -80 + (scroll % 80); y < ROAD_H; y += 80) {
+        ctx.fillRect(ROAD_CX - 3, y, 6, 44);
+    }
+
+    // Bumps
+    for (const b of g.bumps) {
+        ctx.fillStyle = '#2d2d2d';
+        ctx.fillRect(ROAD_L + 6, b.y - 6, CONFIG.roadWidth - 12, 12);
+        ctx.fillStyle = '#f6ad55';
+        for (let x = ROAD_L + 12; x < ROAD_R - 12; x += 24) ctx.fillRect(x, b.y - 2, 12, 4);
+    }
+
+    drawCar(ROAD_CX + g.offset, CAR_Y, g.sideSpeed);
+    if (g.crashed) drawCarOnFire(ROAD_CX + g.offset, CAR_Y, t);
+    else drawGapLines();
+    ctx.restore();
+
+    drawTouchHints();
+    drawHud();
+    drawGapPanel();
+
+    if (phase === 'ready') {
+        drawOverlay(touchUI ? 'Tap to start' : 'Press Start', [
+            touchUI ? 'Hold the left or right side of the road to steer' : 'Steer with ← → / A D or the buttons',
+            settingsText(g),
+            'Keep the car out of the fire'
+        ]);
+    }
+    if (phase === 'paused') {
+        drawOverlay('Paused', [touchUI ? 'Tap the road to keep driving' : 'Press Resume to keep driving']);
+    }
+    if (phase === 'over' && showingClosest) {
+        drawClosestBanner(g);
+    } else if (phase === 'over') {
+        const p = scorePercent();
+        const settings = settingsText(g);
+        if (g.crashed) {
+            drawOverlay('Into the fire!', [
+                `Crashed after ${g.elapsed.toFixed(1)} of ${g.duration} s`,
+                `Score: ${p}%   Grade: ${grade(p)}`,
+                settings
+            ]);
+        } else {
+            const r = ratingFor(g.minGap);
+            drawOverlay('Time!', [
+                `Score: ${p}%   Grade: ${grade(p)}`,
+                `Closest call: ${fmtGap(g.minGap)}${g.minGapSide ? ' (' + g.minGapSide + ' edge)' : ''}`,
+                { text: r.label, color: r.color },
+                settings
+            ]);
+        }
+    }
+}
+
+function drawCar(x, y, sideSpeed) {
+    const w = CONFIG.carWidth, h = CONFIG.carHeight;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate((sideSpeed / CONFIG.maxSideSpeed) * 0.25); // tilt in the direction of drift
+
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-w / 2 - 4, -h / 2 + 8, 6, 16);
+    ctx.fillRect(w / 2 - 2, -h / 2 + 8, 6, 16);
+    ctx.fillRect(-w / 2 - 4, h / 2 - 24, 6, 16);
+    ctx.fillRect(w / 2 - 2, h / 2 - 24, 6, 16);
+
+    ctx.fillStyle = '#2b6cb0';      // blue, so it stands out against the fire
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.fillStyle = '#bee3f8';
+    ctx.fillRect(-w / 2 + 5, -h / 2 + 12, w - 10, 14);
+    ctx.fillRect(-w / 2 + 6, h / 2 - 18, w - 12, 8);
+    ctx.restore();
+}
+
+// Flames over the car after it ends up in the fire
+function drawCarOnFire(x, y, t) {
+    const flick = reduceMotion ? 0 : 1;
+    [[-12, 20, 26], [10, 8, 34], [-4, -14, 30], [14, -26, 22], [-14, -30, 20]].forEach(([dx, dy, size], i) => {
+        const h = size * (1 + flick * 0.25 * Math.sin(t * 13 + i * 1.7));
+        drawFlame(x + dx, y + dy, size * 0.45, h, 'rgba(220, 38, 38, 0.95)');
+        drawFlame(x + dx, y + dy, size * 0.32, h * 0.72, '#ff7a1a');
+        drawFlame(x + dx, y + dy, size * 0.17, h * 0.42, '#ffd23f');
+    });
+}
+
+// Measuring lines from both sides of the car to both road edges, with the distances.
+// The closer side is drawn bold; the farther side slightly dimmed (both bold when equal).
+function drawGapLines() {
+    const gaps = sideGaps();
+    const near = closerSide(gaps);
+    const carX = ROAD_CX + game.offset;
+    const y = CAR_Y + CONFIG.carHeight / 2 + 22;
+
+    ['left', 'right'].forEach(side => {
+        const gap = gaps[side];
+        const carEdge = side === 'right' ? carX + CONFIG.carWidth / 2 : carX - CONFIG.carWidth / 2;
+        const roadEdge = side === 'right' ? ROAD_R : ROAD_L;
+        const bold = near === 'equal' || near === side;
+        const color = ratingFor(gap).color;
+
+        ctx.globalAlpha = bold ? 1 : 0.6;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = bold ? 3 : 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(carEdge, y);
+        ctx.lineTo(roadEdge, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(carEdge, y - 7);  ctx.lineTo(carEdge, y + 7);
+        ctx.moveTo(roadEdge, y - 7); ctx.lineTo(roadEdge, y + 7);
+        ctx.stroke();
+
+        const text = fmtGap(gap);
+        ctx.font = `${bold ? 800 : 600} 15px ${FONT}`;
+        const tw = ctx.measureText(text).width + 14;
+        let lx = (carEdge + roadEdge) / 2 - tw / 2;
+        lx = Math.max(4, Math.min(W - tw - 4, lx));
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.fillRect(lx, y + 10, tw, 22);
+        ctx.fillStyle = color;
+        ctx.textAlign = 'left';
+        ctx.fillText(text, lx + 7, y + 26);
+        ctx.globalAlpha = 1;
+    });
+}
+
+// Show which side of the road is being touched
+function drawTouchHints() {
+    if (phase !== 'playing' || touches.size === 0) return;
+    const active = new Set(touches.values());
+    for (const side of active) {
+        const x0 = side === 'left' ? 0 : W / 2;
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fillRect(x0, HUD_H, W / 2, ROAD_H - HUD_H);
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = `800 40px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(side === 'left' ? '‹‹' : '››', x0 + W / 4, HUD_H + 60);
+    }
+}
+
+function drawHud() {
+    const g = game;
+    const remaining = Math.max(0, g.duration - g.elapsed);
+    ctx.fillStyle = 'rgba(0,0,0,0.68)';
+    ctx.fillRect(0, 0, W, HUD_H);
+    ctx.fillStyle = '#f3ece4';
+    ctx.font = `800 20px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(`Time ${remaining.toFixed(1)} s`, 14, 28);
+    ctx.textAlign = 'right';
+    ctx.fillText(`Score ${phase === 'ready' ? 0 : scorePercent()}%`, W - 14, 28);
+}
+
+// Gap panel under the road. The bar lines up exactly with the road edges (red/white posts)
+// and the car block sits where the car is. Each colored bar runs from a road edge to that
+// side of the car, so it shrinks as the car veers toward that edge, just like the dashed
+// measuring lines under the car. The white mark on each side shows the closest the side
+// of the car has come to that edge.
+function drawGapPanel() {
+    const g = game, y0 = ROAD_H;
+    const gaps = sideGaps();
+    const near = closerSide(gaps);
+    const carX = ROAD_CX + g.offset;
+    const carL = carX - CONFIG.carWidth / 2, carR = carX + CONFIG.carWidth / 2;
+    const by = y0 + 30, bh = 20;
+
+    ctx.fillStyle = '#1d1714';
+    ctx.fillRect(0, y0, W, H - y0);
+    ctx.fillStyle = '#3a3029';
+    ctx.fillRect(0, y0, W, 2);
+
+    // road-width track
+    ctx.fillStyle = '#4a4744';
+    ctx.fillRect(ROAD_L, by, CONFIG.roadWidth, bh);
+
+    // gap bars: left edge -> car, car -> right edge
+    const segs = [
+        ['left', ROAD_L, Math.max(0, carL - ROAD_L)],
+        ['right', Math.min(ROAD_R, carR), Math.max(0, ROAD_R - carR)]
+    ];
+    for (const [side, x, len] of segs) {
+        ctx.globalAlpha = near === 'equal' || near === side ? 1 : 0.6;
+        ctx.fillStyle = ratingFor(gaps[side]).color;
+        ctx.fillRect(x, by + 3, len, bh - 6);
+    }
+    ctx.globalAlpha = 1;
+
+    // the car
+    ctx.fillStyle = '#2b6cb0';
+    ctx.fillRect(carL, by - 3, CONFIG.carWidth, bh + 6);
+    ctx.fillStyle = '#bee3f8';
+    ctx.fillRect(carL + 6, by + 4, CONFIG.carWidth - 12, 5);
+
+    // road edge posts (match the curbs on the road above)
+    for (const x of [ROAD_L, ROAD_R - 6]) {
+        ctx.fillStyle = '#e53e3e';
+        ctx.fillRect(x, by - 8, 6, (bh + 16) / 2);
+        ctx.fillStyle = '#f7f3ee';
+        ctx.fillRect(x, by - 8 + (bh + 16) / 2, 6, (bh + 16) / 2);
+    }
+
+    // labels and live values beside the bar (left of the left edge, right of the right edge)
+    [['left', 14, 'left', 'LEFT GAP'], ['right', W - 14, 'right', 'RIGHT GAP']].forEach(([side, x, align, label]) => {
+        const bold = near === 'equal' || near === side;
+        ctx.textAlign = align;
+        ctx.font = `700 12px ${FONT}`;
+        ctx.fillStyle = '#a8998b';
+        ctx.fillText(label, x, y0 + 24);
+        ctx.globalAlpha = bold ? 1 : 0.6;
+        ctx.font = `${bold ? 800 : 600} 20px ${FONT}`;
+        ctx.fillStyle = ratingFor(gaps[side]).color;
+        ctx.fillText(fmtGap(gaps[side]), x, y0 + 46);
+        ctx.globalAlpha = 1;
+    });
+
+    if (g.crashed) {
+        ctx.font = `700 16px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#a8998b';
+        ctx.fillText('Crashed · no closest call', W / 2, y0 + 96);
+        return;
+    }
+
+    // closest-call marks: where the side of the car got to at its closest
+    const mL = ROAD_L + Math.max(0, g.minLeft);
+    const mR = ROAD_R - Math.max(0, g.minRight);
+    // At the end of a round, keep only the mark on the side of the overall closest call
+    const marks = phase === 'over' && g.minGapSide ? [g.minGapSide === 'left' ? mL : mR] : [mL, mR];
+    ctx.fillStyle = '#ffffff';
+    for (const x of marks) {
+        ctx.fillRect(x - 1.5, by - 6, 3, bh + 12);
+        ctx.beginPath();                       // small pointer under the mark
+        ctx.moveTo(x, by + bh + 6);
+        ctx.lineTo(x - 5, by + bh + 13);
+        ctx.lineTo(x + 5, by + bh + 13);
+        ctx.fill();
+    }
+
+    // closest per side, under each value
+    ctx.font = `600 13px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = ratingFor(g.minLeft).color;
+    ctx.fillText(`Closest ${fmtGap(g.minLeft)}`, 14, y0 + 66);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = ratingFor(g.minRight).color;
+    ctx.fillText(`Closest ${fmtGap(g.minRight)}`, W - 14, y0 + 66);
+
+    // overall closest call
+    const worst = ratingFor(g.minGap);
+    const sideText = g.minGapSide ? ` (${g.minGapSide} edge)` : '';
+    ctx.textAlign = 'center';
+    ctx.font = `700 12px ${FONT}`;
+    ctx.fillStyle = '#a8998b';
+    ctx.fillText('CLOSEST CALL', W / 2, y0 + 92);
+    ctx.font = `800 17px ${FONT}`;
+    ctx.fillStyle = worst.color;
+    ctx.fillText(`${fmtGap(g.minGap)}${sideText} · ${worst.label}`, W / 2, y0 + 112);
+}
+
+// Banner shown in the "Show closest call" view, with a ring on the closer side of the car
+function drawClosestBanner(g) {
+    const r = ratingFor(g.minGap);
+    ctx.fillStyle = 'rgba(245, 196, 0, 0.94)';
+    ctx.fillRect(0, HUD_H, W, 52);
+    ctx.fillStyle = '#15110e';
+    ctx.textAlign = 'center';
+    ctx.font = `800 17px ${FONT}`;
+    ctx.fillText(`CLOSEST CALL · ${g.elapsed.toFixed(1)} s into the run`, W / 2, HUD_H + 22);
+    ctx.font = `700 15px ${FONT}`;
+    ctx.fillText(`${fmtGap(g.minGap)} from the ${g.minGapSide} edge · ${r.label}`, W / 2, HUD_H + 42);
+
+    // ring around the side of the car that came closest
+    const carX = ROAD_CX + g.offset;
+    const sx = g.minGapSide === 'left' ? carX - CONFIG.carWidth / 2 : carX + CONFIG.carWidth / 2;
+    ctx.strokeStyle = '#f5c400';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(sx, CAR_Y, 22, 0, Math.PI * 2);
+    ctx.stroke();
+}
+
+// lines: strings, or {text, color} for a colored line
+function drawOverlay(title, lines) {
+    const boxH = 80 + lines.length * 28;
+    const top = ROAD_H / 2 - boxH / 2;
+    ctx.fillStyle = 'rgba(10, 6, 4, 0.78)';
+    ctx.fillRect(0, top, W, boxH);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f5c400';
+    ctx.font = '400 32px Bungee, Impact, "Arial Black", sans-serif';
+    ctx.fillText(title, W / 2, top + 50);
+    lines.forEach((line, i) => {
+        const l = typeof line === 'string' ? { text: line, color: '#f3ece4' } : line;
+        ctx.font = typeof line === 'string' ? `600 18px ${FONT}` : `800 21px ${FONT}`;
+        ctx.fillStyle = l.color;
+        ctx.fillText(l.text, W / 2, top + 86 + i * 28);
+    });
+}
+
+// =====================================================================
+//  MAIN LOOP (always running so the fire keeps flickering)
+// =====================================================================
+let lastTime = performance.now();
+function frame(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    if (phase === 'playing') update(dt);
+    if (showingClosest && game.closestSnap) {
+        // draw the road as it was at the closest call, then restore the real state
+        const real = game;
+        game = { ...real, ...real.closestSnap, shake: 0, crashed: false };
+        draw(now / 1000);
+        game = real;
+    } else {
+        draw(now / 1000);
+    }
+    requestAnimationFrame(frame);
+}
+syncControls();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
