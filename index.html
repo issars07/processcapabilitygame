@@ -116,6 +116,35 @@
         .replay.attention { animation: none; background: var(--alert); }
     }
     .hint { margin: 0; font-size: 0.9rem; font-weight: 500; color: var(--muted); text-align: center; }
+
+    /* Phone / Computer switch */
+    .segmented { display: flex; gap: 6px; }
+    .segmented { min-width: 0; }
+    .segmented button {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 4px;
+        font-size: 0.8rem;
+        text-transform: none;
+        letter-spacing: 0;
+        background: var(--line);
+    }
+    .segmented button[aria-pressed="true"] { background: var(--sign); color: var(--bg); }
+
+    /* Computer layout: controls in a sidebar on the left, the game fills the rest of the screen */
+    body[data-layout="computer"] .shell {
+        max-width: 1600px;
+        display: grid;
+        grid-template-columns: 300px minmax(0, 1fr);
+        grid-template-rows: repeat(5, auto) 1fr;
+        column-gap: 24px;
+        row-gap: 14px;
+    }
+    body[data-layout="computer"] .stage { grid-column: 2; grid-row: 1 / -1; min-height: 0; }
+    body[data-layout="computer"] .topbar { flex-direction: column; align-items: stretch; }
+    body[data-layout="computer"] .settings { grid-template-columns: 1fr; gap: 4px; }
+    body[data-layout="computer"] .settings label { min-width: 0; margin-top: 6px; }
+    body[data-layout="computer"] .hint { text-align: left; }
 </style>
 </head>
 <body>
@@ -126,6 +155,11 @@
         <button id="startBtn">Start</button>
     </div>
     <div class="settings">
+        <label id="layoutLabel">Playing on</label>
+        <div class="segmented" role="group" aria-labelledby="layoutLabel">
+            <button type="button" id="layoutPhone" aria-pressed="true">Phone</button>
+            <button type="button" id="layoutComputer" aria-pressed="false">Computer</button>
+        </div>
         <label for="timeSlider">Game time <span id="timeLabel">30</span> s</label>
         <input type="range" id="timeSlider" min="15" max="60" step="5" value="30">
         <label for="freqSlider">Bump frequency <span id="freqLabel">Normal</span></label>
@@ -210,7 +244,11 @@ const touchUI = window.matchMedia('(pointer: coarse)').matches;
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const stage = document.getElementById('stage');
-const W = 480, H = 760;   // game coordinates; the canvas is scaled to fit the screen
+// Game coordinates; the canvas is scaled to fit the screen. The width depends on the
+// layout: Computer is wider (bigger fire zones), the road itself is the same in both.
+const LAYOUT_WIDTH = { phone: 480, computer: 880 };
+let W = LAYOUT_WIDTH.phone;
+const H = 760;
 const ROAD_H = 640;       // the road view; below it (640–760) is the gap panel
 
 const startBtn = document.getElementById('startBtn');
@@ -225,9 +263,13 @@ let showingClosest = false;   // true while the "Show closest call" view is on
 const leftBtn = document.getElementById('leftBtn');
 const rightBtn = document.getElementById('rightBtn');
 
-const ROAD_CX = W / 2;
-const ROAD_L = ROAD_CX - CONFIG.roadWidth / 2;
-const ROAD_R = ROAD_CX + CONFIG.roadWidth / 2;
+let ROAD_CX, ROAD_L, ROAD_R;
+function computeRoad() {
+    ROAD_CX = W / 2;
+    ROAD_L = ROAD_CX - CONFIG.roadWidth / 2;
+    ROAD_R = ROAD_CX + CONFIG.roadWidth / 2;
+}
+computeRoad();
 const CAR_Y = ROAD_H - 130;                                       // car's center (vertical)
 const MAX_MARGIN = (CONFIG.roadWidth - CONFIG.carWidth) / 2; // gap to each edge when centered
 const PX_PER_FOOT = CONFIG.carWidth / CONFIG.carWidthFeet;
@@ -496,11 +538,14 @@ function grade(p) {
 //  FIRE ZONE ART (generated once, then scrolled)
 // =====================================================================
 const TILE = 720;   // the fire pattern repeats every 720 px of road
-const SIDES = [
+let SIDES = [];
+function buildFireZones() {
+  const zoneScale = ROAD_L / 120;   // wider zones get more flames and cracks
+  SIDES = [
     { x0: 0, x1: ROAD_L, edge: ROAD_L, out: -1 },   // left fire zone
     { x0: ROAD_R, x1: W, edge: ROAD_R, out: 1 }      // right fire zone
-];
-for (const s of SIDES) {
+  ];
+  for (const s of SIDES) {
     s.flames = [];
     // two rows of flames hugging the road edge
     for (let i = 0; i < TILE / 18; i++) {
@@ -508,14 +553,14 @@ for (const s of SIDES) {
         s.flames.push({ x: s.edge + s.out * 30, y: i * 18 + 9, size: rand(20, 30), ph: rand(0, 6.28) });
     }
     // scattered flames further out
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < Math.round(26 * zoneScale); i++) {
         const x = s.out < 0 ? rand(10, ROAD_L - 46) : rand(ROAD_R + 46, W - 10);
         s.flames.push({ x, y: rand(0, TILE), size: rand(12, 22), ph: rand(0, 6.28) });
     }
     s.flames.sort((a, b) => a.y - b.y);
     // glowing lava cracks
     s.cracks = [];
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < Math.round(9 * zoneScale); i++) {
         let x = rand(s.x0 + 8, s.x1 - 8), y = rand(0, TILE);
         const pts = [[x, y]];
         for (let k = 0; k < 5; k++) {
@@ -525,6 +570,7 @@ for (const s of SIDES) {
         }
         s.cracks.push(pts);
     }
+  }
 }
 
 function drawFireZone(s, scroll, t) {
@@ -925,6 +971,34 @@ function drawOverlay(title, lines) {
 // =====================================================================
 //  MAIN LOOP (always running so the fire keeps flickering)
 // =====================================================================
+// =====================================================================
+//  LAYOUT: Phone or Computer (remembered on this device)
+// =====================================================================
+const layoutBtns = {
+    phone: document.getElementById('layoutPhone'),
+    computer: document.getElementById('layoutComputer')
+};
+function applyLayout(mode, remember) {
+    W = LAYOUT_WIDTH[mode];
+    computeRoad();
+    buildFireZones();
+    document.body.dataset.layout = mode;
+    for (const [m, b] of Object.entries(layoutBtns)) b.setAttribute('aria-pressed', String(m === mode));
+    if (remember) { try { localStorage.setItem('stayCentered.layout', mode); } catch (_) {} }
+    fitCanvas();
+    requestAnimationFrame(fitCanvas);   // again once the new layout has settled
+}
+layoutBtns.phone.addEventListener('click', () => applyLayout('phone', true));
+layoutBtns.computer.addEventListener('click', () => applyLayout('computer', true));
+function initialLayout() {
+    try {
+        const saved = localStorage.getItem('stayCentered.layout');
+        if (saved === 'phone' || saved === 'computer') return saved;
+    } catch (_) {}
+    return (touchUI || window.innerWidth < 760) ? 'phone' : 'computer';
+}
+applyLayout(initialLayout(), false);
+
 let lastTime = performance.now();
 function frame(now) {
     const dt = Math.min((now - lastTime) / 1000, 0.05);
