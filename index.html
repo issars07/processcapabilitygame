@@ -995,7 +995,8 @@ function initialLayout() {
         const saved = localStorage.getItem('stayCentered.layout');
         if (saved === 'phone' || saved === 'computer') return saved;
     } catch (_) {}
-    return (touchUI || window.innerWidth < 760) ? 'phone' : 'computer';
+    // Default: Computer. Only screens too narrow for the sidebar layout (phones) start on Phone.
+    return window.innerWidth < 700 ? 'phone' : 'computer';
 }
 applyLayout(initialLayout(), false);
 
